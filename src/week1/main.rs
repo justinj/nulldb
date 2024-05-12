@@ -1,7 +1,15 @@
-use std::{collections::HashMap, error::Error, fmt::{self, Display, Formatter}, path::{Path, PathBuf}};
+use std::{
+    collections::HashMap,
+    error::Error,
+    fmt::{self, Display, Formatter},
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
-use tokio::{fs::{File, OpenOptions}, io::{AsyncBufReadExt, AsyncWriteExt, BufReader}};
+use tokio::{
+    fs::{File, OpenOptions},
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+};
 
 #[derive(Debug)]
 enum NdbError {
@@ -36,15 +44,9 @@ impl From<serde_json::Error> for NdbError {
 async fn main() -> Result<(), NdbError> {
     let mut db = Db::new("db").await?;
 
-    db.put("foo", "bar").await?;
-    db.put("baz", "qux").await?;
-    db.put("foo", "goo").await?;
-    db.put("foo", "bar").await?;
-    db.put("baz", "qux").await?;
-    db.put("foo", "goo").await?;
-    for i in 0..100 {
-        db.put(format!("key{}", i), format!("value{}", i)).await?;
-    }
+    // db.put("foo", "bar").await?;
+    // db.put("baz", "qux").await?;
+    // db.put("foo", "goo").await?;
 
     println!("{:?}", db.get("foo").await?);
 
@@ -58,7 +60,7 @@ struct Put {
 }
 
 trait Queryable {
-    async fn get(&self, key: impl AsRef<str>) -> Result<Option<String>, NdbError>;
+    async fn get(&self, key: &str) -> Result<Option<String>, NdbError>;
 }
 
 struct Memtable {
@@ -76,8 +78,8 @@ impl Memtable {
 }
 
 impl Queryable for Memtable {
-    async fn get(&self, key: impl AsRef<str>) -> Result<Option<String>, NdbError> {
-        Ok(self.memtable.get(key.as_ref()).map(|s| s.to_string()))
+    async fn get(&self, key: &str) -> Result<Option<String>, NdbError> {
+        Ok(self.memtable.get(key).map(|s| s.to_string()))
     }
 }
 
@@ -88,15 +90,19 @@ struct Log {
 
 impl Log {
     async fn open(path: impl AsRef<Path>) -> Result<Log, NdbError> {
-        let log = OpenOptions::new().append(true).create(true).open(&path).await?;
-        Ok(Log { path: path.as_ref().to_path_buf(), log })
+        let log = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&path)
+            .await?;
+        Ok(Log {
+            path: path.as_ref().to_path_buf(),
+            log,
+        })
     }
 
-    async fn put(&mut self, key: impl AsRef<str>, value: impl AsRef<str>) -> Result<(), NdbError> {
-        let put = Put {
-            key: key.as_ref().to_string(),
-            value: value.as_ref().to_string(),
-        };
+    async fn put(&mut self, key: String, value: String) -> Result<(), NdbError> {
+        let put = Put { key, value };
 
         let serialized = serde_json::to_string(&put)?;
         self.log.write_all(serialized.as_bytes()).await?;
@@ -121,14 +127,14 @@ impl Log {
 }
 
 impl Queryable for Log {
-    async fn get(&self, key: impl AsRef<str>) -> Result<Option<String>, NdbError> {
+    async fn get(&self, key: &str) -> Result<Option<String>, NdbError> {
         let reader = File::open(&self.path).await?;
         let reader = BufReader::new(reader);
         let mut lines = reader.lines();
         let mut result = None;
         while let Some(line) = lines.next_line().await? {
             let put: Put = serde_json::from_str(&line)?;
-            if put.key == key.as_ref() {
+            if put.key == key {
                 result = Some(put.value);
             }
         }
@@ -152,14 +158,14 @@ impl Db {
         Ok(Db { log, memtable })
     }
 
-    async fn put(&mut self, key: impl AsRef<str>, value: impl AsRef<str>) -> Result<(), NdbError> {
-        self.log.put(key.as_ref(), value.as_ref()).await?;
-        self.memtable.insert(key.as_ref().to_string(), value.as_ref().to_string());
+    async fn put(&mut self, key: &str, value: &str) -> Result<(), NdbError> {
+        self.log.put(key.into(), value.into()).await?;
+        self.memtable.insert(key.into(), value.into());
 
         Ok(())
     }
 
-    async fn get(&mut self, key: impl AsRef<str>) -> Result<Option<String>, NdbError> {
+    async fn get(&mut self, key: &str) -> Result<Option<String>, NdbError> {
         Ok(self.memtable.get(key.as_ref()).await?)
     }
 }
