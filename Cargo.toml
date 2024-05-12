@@ -1,0 +1,13 @@
+[package]
+name = "nulldb"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1.0.201", features = ["derive"] }
+serde_json = "1.0.117"
+tokio = { version = "1.37.0", features = ["full"] }
+
+[[bin]]
+name = "week1"
+path = "src/week1/main.rs"
