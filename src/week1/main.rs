@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     error::Error,
     fmt::{self, Display, Formatter},
     path::{Path, PathBuf},
@@ -8,7 +7,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tokio::{
     fs::{File, OpenOptions},
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter},
 };
 
 #[derive(Debug)]
@@ -44,90 +43,66 @@ impl From<serde_json::Error> for NdbError {
 async fn main() -> Result<(), NdbError> {
     let mut db = Db::new("db").await?;
 
-    // db.put("foo", "bar").await?;
-    // db.put("baz", "qux").await?;
-    // db.put("foo", "goo").await?;
+    db.put("foo".as_bytes(), "bar".as_bytes()).await?;
+    db.put("baz".as_bytes(), "qux".as_bytes()).await?;
+    db.put("foo".as_bytes(), "goo".as_bytes()).await?;
 
-    println!("{:?}", db.get("foo").await?);
+    println!(
+        "{:?}",
+        String::from_utf8(db.get("foo".as_bytes()).await?.unwrap()).unwrap()
+    );
 
     Ok(())
 }
 
 #[derive(Serialize, Deserialize)]
 struct Put {
-    key: String,
-    value: String,
+    key: Vec<u8>,
+    value: Vec<u8>,
 }
 
 trait Queryable {
-    async fn get(&self, key: &str) -> Result<Option<String>, NdbError>;
-}
-
-struct Memtable {
-    memtable: HashMap<String, String>,
-}
-
-impl Memtable {
-    fn new(memtable: HashMap<String, String>) -> Memtable {
-        Memtable { memtable }
-    }
-
-    fn insert(&mut self, key: String, value: String) {
-        self.memtable.insert(key, value);
-    }
-}
-
-impl Queryable for Memtable {
-    async fn get(&self, key: &str) -> Result<Option<String>, NdbError> {
-        Ok(self.memtable.get(key).map(|s| s.to_string()))
-    }
+    async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, NdbError>;
 }
 
 struct Log {
     path: PathBuf,
-    log: File,
+    log: BufWriter<File>,
 }
 
 impl Log {
     async fn open(path: impl AsRef<Path>) -> Result<Log, NdbError> {
-        let log = OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&path)
-            .await?;
+        let log = BufWriter::new(
+            OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&path)
+                .await?,
+        );
         Ok(Log {
             path: path.as_ref().to_path_buf(),
             log,
         })
     }
 
-    async fn put(&mut self, key: String, value: String) -> Result<(), NdbError> {
-        let put = Put { key, value };
+    async fn put(&mut self, key: &[u8], value: &[u8]) -> Result<(), NdbError> {
+        let put = Put {
+            key: key.into(),
+            value: value.into(),
+        };
 
         let serialized = serde_json::to_string(&put)?;
         self.log.write_all(serialized.as_bytes()).await?;
         self.log.write_all(b"\n").await?;
-        self.log.sync_all().await?;
+        self.log.flush().await?;
+        self.log.get_ref().sync_all().await?;
 
         Ok(())
-    }
-
-    async fn hydrate(&self) -> Result<Memtable, NdbError> {
-        let reader = File::open(&self.path).await?;
-        let reader = BufReader::new(reader);
-        let mut lines = reader.lines();
-        let mut memtable = HashMap::new();
-        while let Some(line) = lines.next_line().await? {
-            let put: Put = serde_json::from_str(&line)?;
-            memtable.insert(put.key, put.value);
-        }
-
-        Ok(Memtable::new(memtable))
     }
 }
 
 impl Queryable for Log {
-    async fn get(&self, key: &str) -> Result<Option<String>, NdbError> {
+    async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, NdbError> {
         let reader = File::open(&self.path).await?;
         let reader = BufReader::new(reader);
         let mut lines = reader.lines();
@@ -145,7 +120,6 @@ impl Queryable for Log {
 
 struct Db {
     log: Log,
-    memtable: Memtable,
 }
 
 impl Db {
@@ -154,18 +128,16 @@ impl Db {
             tokio::fs::create_dir_all(&db_dir).await?;
         }
         let log = Log::open(db_dir.as_ref().join("log")).await?;
-        let memtable = log.hydrate().await?;
-        Ok(Db { log, memtable })
+        Ok(Db { log })
     }
 
-    async fn put(&mut self, key: &str, value: &str) -> Result<(), NdbError> {
-        self.log.put(key.into(), value.into()).await?;
-        self.memtable.insert(key.into(), value.into());
+    async fn put(&mut self, key: &[u8], value: &[u8]) -> Result<(), NdbError> {
+        self.log.put(key, value).await?;
 
         Ok(())
     }
 
-    async fn get(&mut self, key: &str) -> Result<Option<String>, NdbError> {
-        Ok(self.memtable.get(key.as_ref()).await?)
+    async fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, NdbError> {
+        Ok(self.log.get(key).await?)
     }
 }
